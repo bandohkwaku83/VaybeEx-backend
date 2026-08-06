@@ -1,0 +1,3749 @@
+{
+  "info": {
+    "_postman_id": "vaybeex-api-collection",
+    "name": "VaybeEx API",
+    "description": "Complete VaybeEx backend API — traveler auth, organizer auth & profile, organizer home dashboard, trip management, public trip pages, bookings with Paystack (GHS), organizer payouts, and refunds/cancellations.\n\n**Organizer home dashboard**\n1. `GET /organizer/dashboard` — greeting, KPI stats, trips preview, 7-month revenue pulse, recent MoMo withdrawals\n\n**Paystack booking flow (installments supported)**\n1. `GET /bookings/paystack/config` — public key for Inline JS\n2. `POST /bookings/preview/:tripId` — pricing + `paymentInput` (min/max/suggested). Optional `paymentAmount`\n3. `POST /bookings` — create booking with optional `paymentAmount` (≥ deposit when set) → Paystack URL\n4. Complete payment on Paystack\n5. `POST /bookings/verify-payment` → confirms booking (`deposit_paid` or `fully_paid`)\n6. `POST /bookings/:id/pay` with `paymentAmount` — pay remaining balance in installments\n7. Webhook: `POST /webhooks/paystack`\n\n**Refund / cancellation flow**\n1. Organizer sets refund policy on the trip\n2. Traveler cancels → request `pending` (seats released; funds reserved from organizer withdraw)\n3. Organizer `PATCH /organizer/cancellations/:id` with `status: refunded` **or** `denied`\n4. If approved + eligible: Paystack refunds the traveler automatically from the **platform Paystack balance** (original card/MoMo)\n5. Webhooks `refund.processed` / `refund.failed` finalize status\n6. If denied: no money leaves Paystack\n\n**Money math (important)**\n- Cancel does NOT remove funds from payout `collected` until a refund is approved\n- Pending/processing refunds are held in `reservedForRefunds` and blocked from `availableToWithdraw`\n- Approving a refund: booking → `refunded`, `refundedAmount` set, trip `revenue` reduced by `refundAmount`, retained = amountPaid − refundedAmount stays in collected\n- Denying / non-refundable cancel: full amountPaid stays in collected + revenue\n- There is no Paystack auto-refund — organizer refunds outside the app, then marks `refunded`\n\n**Organizer payouts (automatic MoMo via Paystack Transfers)**\n1. `GET /organizer/payouts/trips` — trip selector\n2. `GET /organizer/payouts/trips/:tripId` — dashboard (`collected`, `reservedForRefunds`, `availableToWithdraw`)\n3. `GET /organizer/payouts/trips/:tripId/members` — member payments\n4. `GET /organizer/payouts/trips/:tripId/members/export` — CSV\n5. `POST /organizer/payouts/trips/:tripId/withdrawals` — initiates Paystack MoMo transfer (`pending` → `processing` → `success`/`failed`)\n6. Webhook `transfer.success` / `transfer.failed` / `transfer.reversed` updates status\n\n**Admin panel**\n1. `POST /admin/auth/login`\n2. `GET /admin/dashboard` — counts\n3. `GET /admin/users` / `?queue=pending_approval` — registered users + KYC queue\n4. `GET /admin/users/:id` — detail\n5. `POST /admin/organizers/:id/approve` | `reject`\n6. `GET /admin/trips`\n7. Withdrawals: list / retry / sync\n\nOrganizer profile setup now sets `status: pending` until admin approves.\n\nCreate an admin: `node scripts/createAdmin.js admin@vaybeex.com 'YourPassword!'`",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api"
+    },
+    {
+      "key": "webhookBaseUrl",
+      "value": "http://localhost:8000/api"
+    },
+    {
+      "key": "travelerToken",
+      "value": ""
+    },
+    {
+      "key": "organizerToken",
+      "value": ""
+    },
+    {
+      "key": "tripId",
+      "value": ""
+    },
+    {
+      "key": "bookingId",
+      "value": ""
+    },
+    {
+      "key": "cancellationRequestId",
+      "value": ""
+    },
+    {
+      "key": "broadcastId",
+      "value": ""
+    },
+    {
+      "key": "paystackReference",
+      "value": ""
+    },
+    {
+      "key": "paystackAuthorizationUrl",
+      "value": ""
+    },
+    {
+      "key": "callbackUrl",
+      "value": "http://localhost:3000/booking/callback"
+    },
+    {
+      "key": "brandSlug",
+      "value": ""
+    },
+    {
+      "key": "tripSlug",
+      "value": ""
+    },
+    {
+      "key": "travelerEmail",
+      "value": "vaybeexperience@gmail.com"
+    },
+    {
+      "key": "travelerPhone",
+      "value": "+233241234567"
+    },
+    {
+      "key": "organizerEmail",
+      "value": "organizer@mailinator.com"
+    },
+    {
+      "key": "organizerPassword",
+      "value": "password123"
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "adminEmail",
+      "value": "admin@vaybeex.com"
+    },
+    {
+      "key": "adminPassword",
+      "value": "password123"
+    },
+    {
+      "key": "withdrawalId",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "01 — Health",
+      "item": [
+        {
+          "name": "GET Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Check if the API is running."
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 — Traveler Auth",
+      "item": [
+        {
+          "name": "POST Register (Create Account)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Jane Doe\",\n  \"email\": \"{{travelerEmail}}\",\n  \"phone\": \"+233 24 123 4567\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates a traveler account and sends the same OTP to email and phone."
+          }
+        },
+        {
+          "name": "POST Sign In — Email (Send OTP)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{travelerEmail}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Sign in with email. Sends OTP to email and phone."
+          }
+        },
+        {
+          "name": "POST Sign In — Phone (Send OTP)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{travelerPhone}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Sign in with phone number. Sends OTP to email and phone."
+          }
+        },
+        {
+          "name": "POST Verify OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json?.data?.token) {",
+                  "  pm.collectionVariables.set('travelerToken', json.data.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{travelerEmail}}\",\n  \"code\": \"1234\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/verify-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "verify-otp"
+              ]
+            },
+            "description": "Verifies the OTP and returns a JWT. Provide email OR phone plus the 4-digit code."
+          }
+        },
+        {
+          "name": "POST Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{travelerEmail}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/resend-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "resend-otp"
+              ]
+            },
+            "description": "Resends the verification code (60 second cooldown). Provide email OR phone."
+          }
+        },
+        {
+          "name": "GET Get Current User",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Returns the authenticated traveler's profile."
+          }
+        },
+        {
+          "name": "POST Sign Out",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('travelerToken', '');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Signs out the traveler and invalidates the current JWT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 — Organizer Auth",
+      "item": [
+        {
+          "name": "POST Register (Create Account)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\",\n  \"password\": \"{{organizerPassword}}\",\n  \"confirmPassword\": \"{{organizerPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates an organizer account and sends a 4-digit OTP to email."
+          }
+        },
+        {
+          "name": "POST Verify Email OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json?.data?.token) {",
+                  "  pm.collectionVariables.set('organizerToken', json.data.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\",\n  \"code\": \"1234\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/verify-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "verify-otp"
+              ]
+            },
+            "description": "Verifies the 4-digit email OTP and returns a JWT."
+          }
+        },
+        {
+          "name": "POST Resend OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/resend-otp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "resend-otp"
+              ]
+            },
+            "description": "Resends the 4-digit verification code (60 second cooldown)."
+          }
+        },
+        {
+          "name": "POST Sign In",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json?.data?.token) {",
+                  "  pm.collectionVariables.set('organizerToken', json.data.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{organizerEmail}}\",\n  \"password\": \"{{organizerPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Sign in with email and password. Email must be verified first."
+          }
+        },
+        {
+          "name": "GET Get Current Organizer",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Returns the authenticated organizer's profile."
+          }
+        },
+        {
+          "name": "PATCH Update Password",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{organizerPassword}}\",\n  \"newPassword\": \"newPassword123\",\n  \"confirmNewPassword\": \"newPassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "password"
+              ]
+            },
+            "description": "Update the organizer sign-in password.\n\n**Body:** `currentPassword`, `newPassword`, `confirmNewPassword` (alias: `confirmPassword`).\nNew password must be at least 8 characters and different from the current one."
+          }
+        },
+        {
+          "name": "POST Sign Out",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('organizerToken', '');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Signs out and invalidates the current JWT."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 — Organizer Profile",
+      "description": "Organizer onboarding and profile edits.\n\n**Public page (`brandSlug`):** required on setup — subdomain slug for the tenant URL (e.g. `adventure-ghana` → `adventure-ghana.localhost:3000`). 2–63 chars, lowercase letters/numbers/hyphens, unique. Locked after setup (verified account).\n\n**After setup, PATCH allows:** fullName, location, whatsapp, aboutYou, tripSpecialties, profilePhoto, brandLogo.\n**Locked after setup:** email, phone, businessName, brandSlug, nationalIdPhoto.\n\n**Brand logo:** optional JPG/PNG (max 5 MB) via `brandLogo`.\n\n**Trip specialties:** selectable list only. Send as JSON array, e.g. `[\"adventure\",\"hiking\",\"weekend_getaway\"]`.\nAllowed values: adventure, beach, cultural, wildlife, city, wellness, hiking, camping, road_trip, weekend_getaway, day_trips, food_and_culinary, festivals, music_and_arts, photography, eco_tourism, water_sports, island_hopping, cross_border, group_retreats, family_friendly, luxury, budget_friendly.\nUse GET Profile Options to load labels for the UI.",
+      "item": [
+        {
+          "name": "GET Profile Options",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/profile/options",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "profile",
+                "options"
+              ]
+            },
+            "description": "Returns selectable options for organizer profile specialties and create-trip category.\n\n- `tripSpecialties`: profile multi-select\n- `categories`: same list for create-trip category dropdown (`value` + `label`)"
+          }
+        },
+        {
+          "name": "POST Complete Profile Setup",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fullName",
+                  "value": "Jane Organizer",
+                  "type": "text"
+                },
+                {
+                  "key": "location",
+                  "value": "Accra, Ghana",
+                  "type": "text"
+                },
+                {
+                  "key": "phone",
+                  "value": "+233 24 123 4567",
+                  "type": "text"
+                },
+                {
+                  "key": "whatsapp",
+                  "value": "+233 24 123 4567",
+                  "type": "text"
+                },
+                {
+                  "key": "businessName",
+                  "value": "Adventure Ghana Tours",
+                  "type": "text"
+                },
+                {
+                  "key": "brandSlug",
+                  "value": "adventure-ghana",
+                  "type": "text",
+                  "description": "Required. Public page slug — becomes adventure-ghana.localhost:3000 (lowercase, letters/numbers/hyphens, unique)"
+                },
+                {
+                  "key": "aboutYou",
+                  "value": "I have been organizing cultural and adventure trips across Ghana for over 5 years.",
+                  "type": "text"
+                },
+                {
+                  "key": "tripSpecialties",
+                  "value": "[\"adventure\",\"hiking\",\"weekend_getaway\",\"cultural\"]",
+                  "type": "text",
+                  "description": "Optional. JSON array of trip specialty values. Use GET Profile Options for the full list."
+                },
+                {
+                  "key": "profilePhoto",
+                  "type": "file",
+                  "src": [],
+                  "description": "Required. JPG or PNG, max 5 MB"
+                },
+                {
+                  "key": "brandLogo",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional brand logo. JPG or PNG, max 5 MB"
+                },
+                {
+                  "key": "nationalIdPhoto",
+                  "type": "file",
+                  "src": [],
+                  "description": "Required. JPG or PNG, max 5 MB"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/profile/setup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "profile",
+                "setup"
+              ]
+            },
+            "description": "Complete organizer onboarding (multipart/form-data).\n\n**Required text:** fullName, location, phone, businessName, brandSlug, aboutYou\n**Optional text:** whatsapp, tripSpecialties (JSON array from allowed list)\n**Required files:** profilePhoto, nationalIdPhoto\n**Optional file:** brandLogo\n\n`brandSlug` is the public page subdomain (e.g. adventure-ghana → adventure-ghana.localhost:3000/trip-name).\n\nResponse includes `data.brandSlug`. `data.brandLogo` is set when uploaded."
+          }
+        },
+        {
+          "name": "PATCH Update Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fullName",
+                  "value": "Jane Organizer",
+                  "type": "text"
+                },
+                {
+                  "key": "location",
+                  "value": "Accra, Ghana",
+                  "type": "text"
+                },
+                {
+                  "key": "whatsapp",
+                  "value": "+233 24 123 4567",
+                  "type": "text"
+                },
+                {
+                  "key": "aboutYou",
+                  "value": "Updated bio about my trip organizing experience.",
+                  "type": "text"
+                },
+                {
+                  "key": "tripSpecialties",
+                  "value": "[\"adventure\",\"wildlife\",\"road_trip\",\"eco_tourism\"]",
+                  "type": "text",
+                  "description": "JSON array of trip specialty values. Use GET Profile Options for the full list. Send [] to clear."
+                },
+                {
+                  "key": "profilePhoto",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional. JPG/PNG, max 5 MB"
+                },
+                {
+                  "key": "brandLogo",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional brand logo. JPG/PNG, max 5 MB"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/profile",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "profile"
+              ]
+            },
+            "description": "Update organizer profile after setup (multipart/form-data). Requires verified + onboarded + approved account.\n\n**Editable (all optional):** fullName, location, whatsapp, aboutYou, tripSpecialties, profilePhoto, brandLogo.\n**Locked (returns 400 if sent):** email, phone, businessName, brandSlug, nationalIdPhoto — identity/KYC fields from setup."
+          }
+        }
+      ]
+    },
+    {
+      "name": "04b — Organizer Dashboard",
+      "item": [
+        {
+          "name": "GET Organizer Home Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/dashboard?tripsLimit=5&withdrawalsLimit=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "tripsLimit",
+                  "value": "5",
+                  "description": "Max trips in the Your trips preview (1–20)"
+                },
+                {
+                  "key": "withdrawalsLimit",
+                  "value": "5",
+                  "description": "Max recent withdrawals (1–20)"
+                }
+              ]
+            },
+            "description": "Organizer home screen payload:\n- `organizer` — greeting (fullName, businessName, photo, KYC status)\n- `stats` — revenue, activeTrips, travelers, views, avgRating (null until reviews exist) + growth % where available\n- `quickActions.pendingRefunds` — badge for Refunds\n- `trips` — latest listings preview (empty `items` → empty state)\n- `revenuePulse` — last 7 months bar series + thisMonth\n- `recentWithdrawals` — cross-trip MoMo cash-outs with tripTitle + status label (Completed/Processing/Pending)\n\nCurrency codes are `GHS`; UI formats as GH₵."
+          },
+          "response": [
+            {
+              "name": "200 — Empty home (new organizer)",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Organizer dashboard retrieved successfully\",\n  \"data\": {\n    \"organizer\": {\n      \"id\": \"665e0a1b2c3d4e5f6a7b8c9a\",\n      \"fullName\": \"Bree Mensah\",\n      \"businessName\": \"Cape Escapes\",\n      \"profilePhoto\": null,\n      \"brandLogo\": null,\n      \"status\": \"approved\",\n      \"onboardingCompleted\": true\n    },\n    \"stats\": {\n      \"currency\": \"GHS\",\n      \"revenue\": { \"value\": 0, \"growthPercent\": 0 },\n      \"activeTrips\": { \"value\": 0, \"totalListings\": 0 },\n      \"travelers\": { \"value\": 0, \"growthPercent\": 0 },\n      \"views\": { \"value\": 0, \"growthPercent\": null },\n      \"avgRating\": { \"value\": null, \"reviewCount\": 0 }\n    },\n    \"quickActions\": {\n      \"pendingRefunds\": 0,\n      \"hasTrips\": false\n    },\n    \"trips\": {\n      \"items\": [],\n      \"pagination\": { \"page\": 1, \"limit\": 5, \"total\": 0, \"pages\": 0 }\n    },\n    \"revenuePulse\": {\n      \"currency\": \"GHS\",\n      \"months\": [\n        { \"month\": \"2026-02\", \"label\": \"FEB\", \"revenue\": 0 },\n        { \"month\": \"2026-03\", \"label\": \"MAR\", \"revenue\": 0 },\n        { \"month\": \"2026-04\", \"label\": \"APR\", \"revenue\": 0 },\n        { \"month\": \"2026-05\", \"label\": \"MAY\", \"revenue\": 0 },\n        { \"month\": \"2026-06\", \"label\": \"JUN\", \"revenue\": 0 },\n        { \"month\": \"2026-07\", \"label\": \"JUL\", \"revenue\": 0 },\n        { \"month\": \"2026-08\", \"label\": \"AUG\", \"revenue\": 0 }\n      ],\n      \"thisMonth\": { \"month\": \"2026-08\", \"label\": \"AUG\", \"revenue\": 0 }\n    },\n    \"recentWithdrawals\": []\n  }\n}"
+            },
+            {
+              "name": "200 — With activity",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Organizer dashboard retrieved successfully\",\n  \"data\": {\n    \"organizer\": {\n      \"id\": \"665e0a1b2c3d4e5f6a7b8c9a\",\n      \"fullName\": \"Bree Mensah\",\n      \"businessName\": \"Cape Escapes\",\n      \"profilePhoto\": null,\n      \"brandLogo\": null,\n      \"status\": \"approved\",\n      \"onboardingCompleted\": true\n    },\n    \"stats\": {\n      \"currency\": \"GHS\",\n      \"revenue\": { \"value\": 38200, \"growthPercent\": 12 },\n      \"activeTrips\": { \"value\": 3, \"totalListings\": 8 },\n      \"travelers\": { \"value\": 86, \"growthPercent\": 8 },\n      \"views\": { \"value\": 4120, \"growthPercent\": null },\n      \"avgRating\": { \"value\": null, \"reviewCount\": 0 }\n    },\n    \"quickActions\": {\n      \"pendingRefunds\": 0,\n      \"hasTrips\": true\n    },\n    \"trips\": {\n      \"items\": [\n        {\n          \"id\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n          \"title\": \"Volta Region Waterfall Trek\",\n          \"destination\": \"Volta\",\n          \"coverImage\": null,\n          \"image\": null,\n          \"startDate\": \"2026-09-01T00:00:00.000Z\",\n          \"endDate\": \"2026-09-03T00:00:00.000Z\",\n          \"status\": \"live\",\n          \"pricePerPerson\": 450,\n          \"price\": 450,\n          \"booked\": 12,\n          \"capacity\": 20,\n          \"fillRate\": 60,\n          \"seatsAvailable\": 8,\n          \"revenue\": 5400,\n          \"views\": 320,\n          \"currency\": \"GHS\"\n        }\n      ],\n      \"pagination\": { \"page\": 1, \"limit\": 5, \"total\": 8, \"pages\": 2 }\n    },\n    \"revenuePulse\": {\n      \"currency\": \"GHS\",\n      \"months\": [\n        { \"month\": \"2026-02\", \"label\": \"FEB\", \"revenue\": 800 },\n        { \"month\": \"2026-03\", \"label\": \"MAR\", \"revenue\": 2100 },\n        { \"month\": \"2026-04\", \"label\": \"APR\", \"revenue\": 1500 },\n        { \"month\": \"2026-05\", \"label\": \"MAY\", \"revenue\": 3200 },\n        { \"month\": \"2026-06\", \"label\": \"JUN\", \"revenue\": 2800 },\n        { \"month\": \"2026-07\", \"label\": \"JUL\", \"revenue\": 4100 },\n        { \"month\": \"2026-08\", \"label\": \"AUG\", \"revenue\": 1200 }\n      ],\n      \"thisMonth\": { \"month\": \"2026-08\", \"label\": \"AUG\", \"revenue\": 1200 }\n    },\n    \"recentWithdrawals\": [\n      {\n        \"id\": \"665fa0b1c2d3e4f5a6b7c8d9\",\n        \"tripId\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n        \"tripTitle\": \"Volta Region Waterfall Trek\",\n        \"amount\": 18500,\n        \"currency\": \"GHS\",\n        \"status\": \"success\",\n        \"label\": \"Completed\",\n        \"momoProvider\": \"mtn\",\n        \"momoProviderLabel\": \"MTN MoMo\",\n        \"momoNumber\": \"233244123456\",\n        \"momoNumberMasked\": \"****3456\",\n        \"destinationLabel\": \"MTN MoMo 23324****56\",\n        \"createdAt\": \"2026-03-01T10:00:00.000Z\"\n      },\n      {\n        \"id\": \"665fa0b1c2d3e4f5a6b7c8da\",\n        \"tripId\": \"665f1a2b3c4d5e6f7a8b9c0e\",\n        \"tripTitle\": \"Mole Safari Experience\",\n        \"amount\": 12000,\n        \"currency\": \"GHS\",\n        \"status\": \"processing\",\n        \"label\": \"Processing\",\n        \"momoProvider\": \"airteltigo\",\n        \"momoProviderLabel\": \"AirtelTigo Money\",\n        \"momoNumber\": \"233271234567\",\n        \"momoNumberMasked\": \"****4567\",\n        \"createdAt\": \"2026-06-01T10:00:00.000Z\"\n      }\n    ]\n  }\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 — Organizer Trips (Manage)",
+      "item": [
+        {
+          "name": "GET Get Form Options",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/options",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "options"
+              ]
+            },
+            "description": "Returns enums for deposit due, refund policies, statuses, visibility, and pricing rates. Categories are owned by the client."
+          }
+        },
+        {
+          "name": "POST Create Trip (Full Form)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json?.data?.id) {",
+                  "  pm.collectionVariables.set('tripId', json.data.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "action",
+                  "value": "draft",
+                  "type": "text",
+                  "description": "draft | publish | schedule"
+                },
+                {
+                  "key": "title",
+                  "value": "Cape Coast Heritage Escape",
+                  "type": "text"
+                },
+                {
+                  "key": "destination",
+                  "value": "Cape Coast, Ghana",
+                  "type": "text"
+                },
+                {
+                  "key": "category",
+                  "value": "cultural",
+                  "type": "text",
+                  "description": "Use value from GET /organizer/profile/options → categories (or tripSpecialties)"
+                },
+                {
+                  "key": "startDate",
+                  "value": "2026-08-01",
+                  "type": "text"
+                },
+                {
+                  "key": "endDate",
+                  "value": "2026-08-04",
+                  "type": "text"
+                },
+                {
+                  "key": "tags",
+                  "value": "history, coast, group",
+                  "type": "text"
+                },
+                {
+                  "key": "organizerContactPhone",
+                  "value": "0244123456",
+                  "type": "text"
+                },
+                {
+                  "key": "organizerContactEmail",
+                  "value": "{{organizerEmail}}",
+                  "type": "text"
+                },
+                {
+                  "key": "description",
+                  "value": "A curated cultural journey through Ghana's historic coast.",
+                  "type": "text"
+                },
+                {
+                  "key": "highlights",
+                  "value": "Cape Coast Castle\nKakum Canopy Walk\nLocal cuisine tasting",
+                  "type": "text"
+                },
+                {
+                  "key": "included",
+                  "value": "Transport\nGuide\nEntrance fees",
+                  "type": "text"
+                },
+                {
+                  "key": "excluded",
+                  "value": "Personal shopping\nTravel insurance",
+                  "type": "text"
+                },
+                {
+                  "key": "maxCapacity",
+                  "value": "20",
+                  "type": "text",
+                  "description": "Max travelers (aliases: maxTravelers, capacity). Leave empty for unlimited."
+                },
+                {
+                  "key": "departurePoint",
+                  "value": "Accra Mall",
+                  "type": "text"
+                },
+                {
+                  "key": "meetingPointDetails",
+                  "value": "Main entrance, near the info desk",
+                  "type": "text"
+                },
+                {
+                  "key": "departureTime",
+                  "value": "06:00",
+                  "type": "text"
+                },
+                {
+                  "key": "expectedReturnTime",
+                  "value": "20:00",
+                  "type": "text"
+                },
+                {
+                  "key": "slug",
+                  "value": "cape-coast-heritage-escape",
+                  "type": "text",
+                  "description": "Editable public path under brand subdomain"
+                },
+                {
+                  "key": "pricePerPerson",
+                  "value": "850",
+                  "type": "text"
+                },
+                {
+                  "key": "offerCouplePrice",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "couplePrice",
+                  "value": "1600",
+                  "type": "text",
+                  "description": "Package rate for 2"
+                },
+                {
+                  "key": "offerGroupPrice",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "groupPrice",
+                  "value": "7000",
+                  "type": "text",
+                  "description": "Flat package rate"
+                },
+                {
+                  "key": "groupSize",
+                  "value": "10",
+                  "type": "text"
+                },
+                {
+                  "key": "depositAmount",
+                  "value": "200",
+                  "type": "text",
+                  "description": "Optional initial deposit (GHS)"
+                },
+                {
+                  "key": "depositDue",
+                  "value": "at_booking",
+                  "type": "text"
+                },
+                {
+                  "key": "refundPolicy",
+                  "value": "partial",
+                  "type": "text",
+                  "description": "full | partial | none (or fully_refundable | partially_refundable | non_refundable)"
+                },
+                {
+                  "key": "refundPercentage",
+                  "value": "50",
+                  "type": "text"
+                },
+                {
+                  "key": "cancellationDeadlineDays",
+                  "value": "14",
+                  "type": "text"
+                },
+                {
+                  "key": "visibility",
+                  "value": "private",
+                  "type": "text"
+                },
+                {
+                  "key": "addOns",
+                  "value": "[{\"name\":\"Single room upgrade\",\"price\":150,\"perPerson\":true},{\"name\":\"Airport pickup\",\"price\":80,\"perPerson\":false}]",
+                  "type": "text"
+                },
+                {
+                  "key": "itinerary",
+                  "value": "[{\"day\":1,\"title\":\"Arrival & Castle Tour\",\"activities\":[\"Check-in\",\"Cape Coast Castle visit\"]},{\"day\":2,\"title\":\"Canopy Walk\",\"activities\":[\"Kakum National Park\"]}]",
+                  "type": "text"
+                },
+                {
+                  "key": "coverImage",
+                  "type": "file",
+                  "src": [],
+                  "description": "Required to publish. Optional for drafts (JPG/PNG, max 5 MB)."
+                },
+                {
+                  "key": "gallery",
+                  "type": "file",
+                  "src": [],
+                  "description": "Gallery image (add up to 6; repeat field for multiple)"
+                },
+                {
+                  "key": "flyer",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional brochure (JPG, PNG, or PDF)"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips"
+              ]
+            },
+            "description": "Create trip (multipart). Supports 4-step UI fields: slug, couple/group rates, refund aliases (full/partial/none), maxTravelers/price aliases. No minCapacity or difficulty fields. action=draft|publish|schedule. Cover optional for drafts; required to publish."
+          }
+        },
+        {
+          "name": "GET List My Trips",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips?status=draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "draft"
+                },
+                {
+                  "key": "visibility",
+                  "value": "private",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List the authenticated organizer's trips. Filter by status or visibility."
+          }
+        },
+        {
+          "name": "GET Get Trip Details (Organizer View)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Full trip detail for the organizer dashboard — includes bookings, bookingsSummary, minReached, and analytics (funnel + repeat bookers)."
+          }
+        },
+        {
+          "name": "GET Trip Analytics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/analytics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "analytics"
+              ]
+            },
+            "description": "Live performance: views, book clicks, checkout starts, conversions, revenue, funnel, repeat bookers."
+          }
+        },
+        {
+          "name": "PATCH Update Trip",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Cape Coast Heritage Escape (Updated)\",\n  \"earlyBirdPrice\": 750,\n  \"earlyBirdDeadline\": \"2026-07-01\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Update trip fields. Use multipart PATCH for new media uploads."
+          }
+        },
+        {
+          "name": "PATCH Publish — Go Live",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"live\",\n  \"visibility\": \"public\",\n  \"publishConfirmed\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "publish"
+              ]
+            },
+            "description": "Validates all required fields, sets status to live, and generates a public slug."
+          }
+        },
+        {
+          "name": "PATCH Publish — Schedule",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"schedule\",\n  \"visibility\": \"public\",\n  \"publishConfirmed\": true,\n  \"scheduledPublishAt\": \"2026-07-15T08:00:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "publish"
+              ]
+            },
+            "description": "Schedule a trip to go live at a future date."
+          }
+        },
+        {
+          "name": "PATCH Publish — Save as Draft",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"draft\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "publish"
+              ]
+            },
+            "description": "Move a trip back to draft status."
+          }
+        },
+        {
+          "name": "DELETE Delete or Cancel Trip",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Hard-deletes drafts with no bookings. Live trips with bookings are cancelled instead."
+          }
+        },
+        {
+          "name": "GET List Trip Bookings (Organizer)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/bookings?status=confirmed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "bookings"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "confirmed"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "All bookings for a trip — paid, pending, etc."
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 — Public Trips (Traveler)",
+      "description": "Browse & favorite public trips, and view traveler booking history.\n\n**Pending bookings:** when a traveler starts a booking but does not complete Paystack payment, the booking status is `pending_payment` (query with `status=pending`).",
+      "item": [
+        {
+          "name": "GET Browse Public Trips",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}",
+                "disabled": true
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips?category=cultural",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips"
+              ],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "cultural"
+                },
+                {
+                  "key": "brandSlug",
+                  "value": "{{brandSlug}}",
+                  "disabled": true,
+                  "description": "When set, returns live + completed for that organizer profile"
+                },
+                {
+                  "key": "destination",
+                  "value": "Cape Coast",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Browse public trips. Without brandSlug: live only. With brandSlug (organizer profile): live + completed. Optional traveler Bearer token adds isFavorited. Each trip includes organizer info and isBookable (false when completed)."
+          }
+        },
+        {
+          "name": "GET Get Trip Page (by ID or Slug)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}",
+                "disabled": true
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Public trip detail. Live and completed trips are viewable. isBookable is false when completed (booking still blocked). With traveler auth, includes isFavorited."
+          }
+        },
+        {
+          "name": "GET Trip by Brand + Slug",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}",
+                "disabled": true
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips/brand/{{brandSlug}}/{{tripSlug}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "brand",
+                "{{brandSlug}}",
+                "{{tripSlug}}"
+              ]
+            },
+            "description": "Canonical tenant trip page. Live and completed trips are publicly viewable; booking only when isBookable/live."
+          }
+        },
+        {
+          "name": "POST Track Trip Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"book_click\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/trips/{{tripId}}/events",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "{{tripId}}",
+                "events"
+              ]
+            },
+            "description": "Track funnel events: book_click | checkout_start. Views increment automatically on GET trip page."
+          }
+        },
+        {
+          "name": "POST Add Trip to Favorites",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips/{{tripId}}/favorite",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "{{tripId}}",
+                "favorite"
+              ]
+            },
+            "description": "Save a live public trip to the traveler's favorites. Idempotent — safe to call again if already favorited."
+          }
+        },
+        {
+          "name": "DELETE Remove Trip from Favorites",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips/{{tripId}}/favorite",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "{{tripId}}",
+                "favorite"
+              ]
+            },
+            "description": "Remove a trip from the traveler's favorites."
+          }
+        },
+        {
+          "name": "GET My Favorite Trips",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/trips/favorites?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trips",
+                "favorites"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "List all trips the authenticated traveler has favorited."
+          }
+        },
+        {
+          "name": "GET My Bookings — Pending",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me?status=pending",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Pending = traveler started booking but did not complete Paystack payment (`pending_payment`). Use `status=pending` or `status=pending_payment`."
+          }
+        },
+        {
+          "name": "GET My Bookings — Past",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me?status=past",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "past"
+                }
+              ]
+            },
+            "description": "Confirmed bookings whose trip has already ended (or trip status is completed)."
+          }
+        },
+        {
+          "name": "GET My Bookings — Cancelled",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me?status=cancelled",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "cancelled"
+                }
+              ]
+            },
+            "description": "Cancelled bookings for the authenticated traveler."
+          }
+        },
+        {
+          "name": "GET My Bookings — Upcoming",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me?status=upcoming",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "upcoming"
+                }
+              ]
+            },
+            "description": "Confirmed bookings for trips that have not ended yet."
+          }
+        },
+        {
+          "name": "GET My Bookings — All",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ]
+            },
+            "description": "All traveler bookings (pending, confirmed, cancelled, refunded). Filter with status=pending|past|cancelled|upcoming|confirmed|refunded."
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 — Traveler Bookings (Paystack)",
+      "description": "Traveler booking checkout powered by Paystack (GHS).\n\n**Happy path**\n1. Preview pricing\n2. Get Paystack public key (optional — also returned on create)\n3. Create booking → open `paystackAuthorizationUrl`\n4. After Paystack redirects to `callbackUrl?reference=...`, call Verify Payment\n5. Booking status: `pending_payment` → `confirmed`\n\n**Also**\n- Resume Payment if the traveler abandoned checkout\n- Webhook confirms payment server-side (signed with `x-paystack-signature`)",
+      "item": [
+        {
+          "name": "POST Preview Booking (Solo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bookingType\": \"solo\",\n  \"guests\": [],\n  \"paymentAmount\": 500,\n  \"selectedAddOns\": [\n    { \"addOnId\": \"REPLACE_WITH_TRIP_ADDON_ID\", \"selected\": true }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/preview/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "preview",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Calculate pricing before checkout.\n\nOptional `paymentAmount` — what the traveler wants to pay now.\nResponse includes:\n- `pricing.depositTotal` / `minPayment` / `maxPayment` / `suggestedPayment` / `amountDueNow`\n- `paymentInput` — helpers for the amount field (min = deposit when trip has one)"
+          }
+        },
+        {
+          "name": "POST Preview Booking (Couple)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bookingType\": \"couple\",\n  \"paymentAmount\": 1000,\n  \"guests\": [\n    { \"fullName\": \"Jane Doe\", \"email\": \"{{travelerEmail}}\", \"age\": 28 },\n    { \"fullName\": \"John Doe\", \"age\": 30 }\n  ],\n  \"selectedAddOns\": [\n    { \"addOnId\": \"REPLACE_WITH_TRIP_ADDON_ID\", \"selected\": true },\n    { \"addOnId\": \"REPLACE_WITH_OTHER_ADDON_ID\", \"selected\": false }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/preview/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "preview",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Couple booking — exactly 2 travelers. `paymentAmount` must be ≥ deposit (if set) and ≤ total."
+          }
+        },
+        {
+          "name": "POST Preview Booking (Group)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bookingType\": \"group\",\n  \"partySize\": 5,\n  \"guests\": [\n    { \"fullName\": \"Jane Doe\", \"email\": \"{{travelerEmail}}\", \"age\": 28 },\n    { \"fullName\": \"John Doe\", \"age\": 30 },\n    { \"fullName\": \"Ama Mensah\", \"age\": 27 },\n    { \"fullName\": \"Kofi Annan\", \"age\": 32 },\n    { \"fullName\": \"Esi Boateng\", \"age\": 29 }\n  ],\n  \"selectedAddOns\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/preview/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "preview",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Group booking — partySize must match guests array length. Omit `paymentAmount` to use suggested (deposit or full)."
+          }
+        },
+        {
+          "name": "GET Paystack Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/paystack/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "paystack",
+                "config"
+              ]
+            },
+            "description": "Public endpoint. Returns `{ publicKey, currency: \"GHS\" }` for Paystack Inline / Popup on the frontend. No auth required."
+          }
+        },
+        {
+          "name": "POST Create Booking (Paystack)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const data = json?.data;",
+                  "if (data?.id) pm.collectionVariables.set('bookingId', data.id);",
+                  "if (data?.paystackReference) pm.collectionVariables.set('paystackReference', data.paystackReference);",
+                  "if (data?.paystackAuthorizationUrl) pm.collectionVariables.set('paystackAuthorizationUrl', data.paystackAuthorizationUrl);",
+                  "if (pm.response.code === 201) {",
+                  "  console.log('Open Paystack checkout:', data?.paystackAuthorizationUrl);",
+                  "  console.log('Then verify with reference:', data?.paystackReference);",
+                  "  console.log('Charging amountDueNow:', data?.pricing?.amountDueNow);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"bookingType\": \"couple\",\n  \"location\": \"Accra, Ghana\",\n  \"whatsapp\": \"+233 24 123 4567\",\n  \"paymentAmount\": 500,\n  \"guests\": [\n    { \"age\": 28 },\n    { \"fullName\": \"John Doe\", \"age\": 30 }\n  ],\n  \"selectedAddOns\": [\n    { \"addOnId\": \"REPLACE_WITH_TRIP_ADDON_ID\", \"selected\": true, \"quantity\": 1 }\n  ],\n  \"callbackUrl\": \"{{callbackUrl}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings"
+              ]
+            },
+            "description": "Creates a `pending_payment` booking and initializes Paystack.\n\n**`paymentAmount` (optional)** — traveler-chosen installment.\n- With trip deposit: must be ≥ `depositTotal` and ≤ `totalAmount` (defaults to deposit)\n- Without deposit: must equal full `totalAmount`\n\nPaystack charges `pricing.amountDueNow`.\nAfter a partial first payment, `paymentStatus` becomes `deposit_paid` and the traveler can pay more via `POST /bookings/:id/pay`."
+          }
+        },
+        {
+          "name": "POST Resume / Pay Installment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const data = json?.data;",
+                  "if (data?.paystackReference) pm.collectionVariables.set('paystackReference', data.paystackReference);",
+                  "if (data?.paystackAuthorizationUrl) pm.collectionVariables.set('paystackAuthorizationUrl', data.paystackAuthorizationUrl);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentAmount\": 300,\n  \"callbackUrl\": \"{{callbackUrl}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/{{bookingId}}/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "{{bookingId}}",
+                "pay"
+              ]
+            },
+            "description": "Start Paystack checkout for:\n1. `pending_payment` — retry / change first payment amount\n2. `confirmed` + `deposit_paid` — pay another installment toward the balance\n\nSend `paymentAmount` between `pricing.minPayment` and `pricing.maxPayment` (remaining balance)."
+          }
+        },
+        {
+          "name": "POST Verify Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{paystackReference}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/verify-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "verify-payment"
+              ]
+            },
+            "description": "Call after Paystack redirects to your callback with `?reference=...`.\n\nVerifies the charge with Paystack (amount + currency must match), then moves booking `pending_payment` → `confirmed`.\n\nIdempotent if already confirmed."
+          }
+        },
+        {
+          "name": "POST Paystack Webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-paystack-signature",
+                "value": "PASTE_HMAC_SHA512_OF_RAW_BODY",
+                "description": "HMAC SHA512 of the raw JSON body using PAYSTACK_SECRET_KEY"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"charge.success\",\n  \"data\": {\n    \"reference\": \"{{paystackReference}}\",\n    \"amount\": 10000,\n    \"currency\": \"GHS\",\n    \"status\": \"success\",\n    \"paid_at\": \"2026-07-18T12:00:00.000Z\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{webhookBaseUrl}}/webhooks/paystack",
+              "host": [
+                "{{webhookBaseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "paystack"
+              ]
+            },
+            "description": "Server-to-server webhook from Paystack. Path is `/api/webhooks/paystack` (outside `/bookings`).\n\nRequires valid `x-paystack-signature` (HMAC SHA512 of the **raw** body with `PAYSTACK_SECRET_KEY`). Backend re-verifies the transaction with Paystack before confirming.\n\nFor local testing, use ngrok and set the webhook URL in the Paystack dashboard. Manual Postman calls need a real signature or they return 401."
+          }
+        },
+        {
+          "name": "GET My Bookings",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me?status=pending",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "description": "pending | pending_payment | past | cancelled | upcoming | confirmed | refunded | all"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List traveler bookings. `status=pending` = started booking but did not finish Paystack (`pending_payment`). Also: past, cancelled, upcoming, confirmed, refunded, all."
+          }
+        },
+        {
+          "name": "GET Get Booking by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/{{bookingId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "{{bookingId}}"
+              ]
+            },
+            "description": "Fetch a single booking owned by the traveler. Includes `paystackAuthorizationUrl` while still pending payment."
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 — Refunds & Cancellations",
+      "description": "Refunds use the **platform Paystack balance** (same wallet as collections).\n\n**Organizer**\n- Approve: `PATCH .../cancellations/:id` `{ \"status\": \"refunded\" }` → Paystack refunds traveler automatically\n- Deny: `{ \"status\": \"denied\" }` → no payout\n\n**Statuses**\n`pending` → organizer decides → `processing` (Paystack accepted) → `refunded` (webhook) | `denied`\nOn Paystack failure, status returns to `pending` with `refundFailureReason` so organizer can retry approve.\n\n**Accounting**\n- Pending/processing refunds reserved from `availableToWithdraw`\n- On `refunded`: booking.refundedAmount set, trip revenue reduced\n",
+      "item": [
+        {
+          "name": "GET Cancellation Preview",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/{{bookingId}}/cancellation-preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "{{bookingId}}",
+                "cancellation-preview"
+              ]
+            },
+            "description": "Traveler preview before requesting a refund. Returns eligibility, estimated `refundAmount`, policy summary, and days until departure. Based on the trip's organizer-set refund policy."
+          }
+        },
+        {
+          "name": "POST Request Cancellation / Refund",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const request = json?.data?.request;",
+                  "if (request?.id) pm.collectionVariables.set('cancellationRequestId', request.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Family emergency — unable to travel on the scheduled dates.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bookings/{{bookingId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "{{bookingId}}",
+                "cancel"
+              ]
+            },
+            "description": "Cancels the booking and releases seats.\n\n- If refund-eligible → creates a `pending` CancellationRequest for organizer review\n- If not eligible → booking cancelled, request saved as `denied` with `refundAmount: 0`\n\nOptional body: `{ \"reason\": \"...\" }`.\nSaves `cancellationRequestId` from the response."
+          }
+        },
+        {
+          "name": "GET My Cancellations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{travelerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/bookings/me/cancellations?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bookings",
+                "me",
+                "cancellations"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "disabled": true,
+                  "description": "pending | processing | refunded | denied"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "List the traveler's cancellation / refund requests with status tracking."
+          }
+        },
+        {
+          "name": "GET Organizer Cancellations",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const request = json?.data?.requests?.[0];",
+                  "if (request?.id) pm.collectionVariables.set('cancellationRequestId', request.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/cancellations?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "cancellations"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "disabled": true,
+                  "description": "pending | processing | refunded | denied"
+                },
+                {
+                  "key": "tripId",
+                  "value": "{{tripId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Organizer refund queue. Includes traveler name/email/phone. Filter by `status` or `tripId`. Saves first request id to `cancellationRequestId`."
+          }
+        },
+        {
+          "name": "GET Trip Cancellations",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/cancellations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "cancellations"
+              ]
+            },
+            "description": "Cancellation / refund requests for one trip (Refunds tab on trip detail)."
+          }
+        },
+        {
+          "name": "PATCH Approve Refund",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"refunded\",\n  \"organizerNote\": \"Approved — Paystack will refund original payment method.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/cancellations/{{cancellationRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "cancellations",
+                "{{cancellationRequestId}}"
+              ]
+            },
+            "description": "Approve a refundable cancellation. Initiates a **Paystack refund** to the traveler’s original payment method from the platform balance. No manual MoMo/bank send.\n\nResponse may be `processing` (await webhook) or `refunded` if Paystack already completed.\n\nAllowed: pending → refunded | denied; processing → refunded (retry) | denied."
+          }
+        },
+        {
+          "name": "PATCH Mark Processing",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"processing\",\n  \"organizerNote\": \"Initiating refund to original payment method.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/cancellations/{{cancellationRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "cancellations",
+                "{{cancellationRequestId}}"
+              ]
+            },
+            "description": "Optional. Usually set automatically after Paystack accepts the refund. Prefer Approve Refund (`status: refunded`)."
+          }
+        },
+        {
+          "name": "PATCH Deny Refund",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"denied\",\n  \"organizerNote\": \"Outside the refund window for this trip's policy.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/cancellations/{{cancellationRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "cancellations",
+                "{{cancellationRequestId}}"
+              ]
+            },
+            "description": "Deny a pending/processing refund request. Booking stays cancelled; no revenue adjustment."
+          }
+        }
+      ]
+    },
+    {
+      "name": "08b — Messages & Broadcasts",
+      "description": "Organizer one-way SMS broadcasts to trip participants (not 1:1 chat).\n\n**Compose flow**\n1. `GET /organizer/trips/:id/broadcast-audience` — resolve recipients + paid/unpaid counts\n2. `POST /organizer/broadcasts/estimate` — recipientCount × segments × GHS 0.05\n3. `POST /organizer/broadcasts` — queue send (Arkesel). Pass `Idempotency-Key` to avoid double-send\n4. Poll `GET /organizer/broadcasts/:id` for status (`pending` → `sent` | `failed`)\n\n**Audience modes**\n- `everyone` — all confirmed bookings with phone\n- `filter` + `paid` | `unpaid` — paymentStatus mapping (`fully_paid` → paid; deposit/unpaid → unpaid)\n- `specific` + `attendeeIds` — booking ids\n\nMerge tag: `{FirstName}` (first token of traveler name).",
+      "item": [
+        {
+          "name": "GET Broadcast Audience",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/trips/{{tripId}}/broadcast-audience?mode=everyone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "trips",
+                "{{tripId}}",
+                "broadcast-audience"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "everyone",
+                  "description": "everyone | filter | specific"
+                },
+                {
+                  "key": "filter",
+                  "value": "paid",
+                  "disabled": true,
+                  "description": "paid | unpaid (when mode=filter)"
+                }
+              ]
+            },
+            "description": "Preview recipients for compose. Returns counts.paid / unpaid / total / sendable."
+          }
+        },
+        {
+          "name": "POST Estimate Broadcast",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"message\": \"Hi {FirstName}, reminder: balance payment is due soon.\",\n  \"audience\": {\n    \"mode\": \"filter\",\n    \"filter\": \"unpaid\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts/estimate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts",
+                "estimate"
+              ]
+            },
+            "description": "Server-side cost estimate: recipientCount × segments × SMS_COST_PER_SEGMENT_GHS."
+          }
+        },
+        {
+          "name": "POST Create Broadcast (everyone)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const id = json?.data?.broadcast?.id;",
+                  "if (id) pm.collectionVariables.set('broadcastId', id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "broadcast-demo-1",
+                "disabled": true
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"channel\": \"sms\",\n  \"message\": \"Hi {FirstName}, final itinerary for the trip is ready. See you soon!\",\n  \"audience\": {\n    \"mode\": \"everyone\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts"
+              ]
+            },
+            "description": "Queue an SMS broadcast. Status starts as `pending` then moves to `sent` or `failed`. Saves `broadcastId`."
+          }
+        },
+        {
+          "name": "POST Create Broadcast (paid filter)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"channel\": \"sms\",\n  \"message\": \"Hi {FirstName}, thanks for completing payment. Pre-trip details coming soon.\",\n  \"audience\": {\n    \"mode\": \"filter\",\n    \"filter\": \"paid\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Create Broadcast (specific)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tripId\": \"{{tripId}}\",\n  \"channel\": \"sms\",\n  \"message\": \"Hi {FirstName}, this is a personal update about your booking.\",\n  \"audience\": {\n    \"mode\": \"specific\",\n    \"attendeeIds\": [\"{{bookingId}}\"]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts"
+              ]
+            },
+            "description": "`attendeeIds` are booking ids from GET trip bookings / broadcast-audience."
+          }
+        },
+        {
+          "name": "GET Broadcasts (history)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const id = json?.data?.broadcasts?.[0]?.id;",
+                  "if (id) pm.collectionVariables.set('broadcastId', id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts?limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "sent",
+                  "disabled": true,
+                  "description": "all | sent | pending | failed"
+                },
+                {
+                  "key": "tripId",
+                  "value": "{{tripId}}",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Recent broadcasts for history table. Includes summary.sentCount."
+          }
+        },
+        {
+          "name": "GET Broadcast Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/broadcasts/{{broadcastId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "broadcasts",
+                "{{broadcastId}}"
+              ]
+            },
+            "description": "Full detail for drawer + per-recipient delivery rows (sent/failed/skipped)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 — Organizer Payouts",
+      "item": [
+        {
+          "name": "GET Payout Trips (selector)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const trip = json?.data?.trips?.[0];",
+                  "if (trip?.id) pm.collectionVariables.set('tripId', trip.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/payouts/trips?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "payouts",
+                "trips"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50"
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "live",
+                  "disabled": true,
+                  "description": "Optional: live | scheduled | completed | cancelled"
+                }
+              ]
+            },
+            "description": "Trip dropdown for the Payouts page. Returns title, dates, destination, price, booked/capacity. Excludes drafts. Saves first trip id to `tripId`."
+          },
+          "response": [
+            {
+              "name": "200 — Payout trips",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips?limit=50",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips"
+                  ],
+                  "query": [
+                    {
+                      "key": "limit",
+                      "value": "50"
+                    }
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Payout trips retrieved successfully\",\n  \"data\": {\n    \"trips\": [\n      {\n        \"id\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n        \"title\": \"Cape Coast Weekend Escape\",\n        \"destination\": \"Cape Coast\",\n        \"startDate\": \"2026-08-15T00:00:00.000Z\",\n        \"endDate\": \"2026-08-17T00:00:00.000Z\",\n        \"pricePerPerson\": 450,\n        \"price\": 450,\n        \"booked\": 12,\n        \"capacity\": 20,\n        \"status\": \"live\",\n        \"currency\": \"GHS\"\n      },\n      {\n        \"id\": \"665f1a2b3c4d5e6f7a8b9c0e\",\n        \"title\": \"Aburi Hills Day Trip\",\n        \"destination\": \"Aburi\",\n        \"startDate\": \"2026-09-01T00:00:00.000Z\",\n        \"endDate\": \"2026-09-01T00:00:00.000Z\",\n        \"pricePerPerson\": 180,\n        \"price\": 180,\n        \"booked\": 8,\n        \"capacity\": 15,\n        \"status\": \"scheduled\",\n        \"currency\": \"GHS\"\n      }\n    ],\n    \"pagination\": {\n      \"page\": 1,\n      \"limit\": 50,\n      \"total\": 2,\n      \"pages\": 1\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET Trip Payouts Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "payouts",
+                "trips",
+                "{{tripId}}"
+              ]
+            },
+            "description": "Full payouts dashboard for one trip:\n- `summary` — collected, outstanding, potential, collection %, paid/partial/pending members\n- `paymentMethods` — breakdown by Card / MTN MoMo / etc.\n- `withdrawal` — latest withdrawal\n- `memberPayments` — statusCounts + recent rows\n- `availableToWithdraw` = collected − withdrawnTotal − reservedForRefunds"
+          },
+          "response": [
+            {
+              "name": "200 — Trip payouts dashboard",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}"
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Trip payouts retrieved successfully\",\n  \"data\": {\n    \"trip\": {\n      \"id\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n      \"title\": \"Cape Coast Weekend Escape\",\n      \"destination\": \"Cape Coast\",\n      \"startDate\": \"2026-08-15T00:00:00.000Z\",\n      \"endDate\": \"2026-08-17T00:00:00.000Z\",\n      \"pricePerPerson\": 450,\n      \"price\": 450,\n      \"booked\": 12,\n      \"capacity\": 20,\n      \"status\": \"live\",\n      \"currency\": \"GHS\"\n    },\n    \"summary\": {\n      \"collected\": 4200,\n      \"outstanding\": 900,\n      \"potential\": 5400,\n      \"collectionPercent\": 77.8,\n      \"paidMembers\": 8,\n      \"partialMembers\": 2,\n      \"pendingMembers\": 2,\n      \"totalMembers\": 12,\n      \"awaitingPayment\": 4,\n      \"currency\": \"GHS\",\n      \"reservedForRefunds\": 225,\n      \"collectionProgress\": {\n        \"collected\": 4200,\n        \"potential\": 5400,\n        \"percent\": 77.8\n      }\n    },\n    \"paymentMethods\": {\n      \"methodsUsed\": 2,\n      \"avgPerPaidMember\": 420,\n      \"methods\": [\n        {\n          \"method\": \"MTN MoMo\",\n          \"collected\": 2700,\n          \"percentOfCollected\": 64.3,\n          \"paidCount\": 5,\n          \"partialCount\": 1,\n          \"countLabel\": \"5 paid · 1 partial\"\n        },\n        {\n          \"method\": \"Card\",\n          \"collected\": 1500,\n          \"percentOfCollected\": 35.7,\n          \"paidCount\": 3,\n          \"partialCount\": 1,\n          \"countLabel\": \"3 paid · 1 partial\"\n        }\n      ]\n    },\n    \"withdrawal\": {\n      \"id\": \"665f9a1b2c3d4e5f6a7b8c9d\",\n      \"tripId\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n      \"organizerId\": \"665e0a1b2c3d4e5f6a7b8c9a\",\n      \"amount\": 1000,\n      \"currency\": \"GHS\",\n      \"status\": \"success\",\n      \"processedAt\": \"2026-07-18T14:22:00.000Z\",\n      \"note\": \"Partial settlement\",\n      \"payoutMethod\": \"mobile_money\",\n      \"momoProvider\": \"mtn\",\n      \"momoNumber\": \"233244123456\",\n      \"accountName\": \"Jane Organizer\",\n      \"destinationLabel\": \"MTN MoMo 23324****56 (Jane Organizer)\",\n      \"createdAt\": \"2026-07-18T14:22:00.000Z\",\n      \"updatedAt\": \"2026-07-18T14:22:00.000Z\",\n      \"label\": \"Success\"\n    },\n    \"withdrawals\": [\n      {\n        \"id\": \"665f9a1b2c3d4e5f6a7b8c9d\",\n        \"tripId\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n        \"organizerId\": \"665e0a1b2c3d4e5f6a7b8c9a\",\n        \"amount\": 1000,\n        \"currency\": \"GHS\",\n        \"status\": \"success\",\n        \"processedAt\": \"2026-07-18T14:22:00.000Z\",\n        \"note\": \"Partial settlement\",\n        \"payoutMethod\": \"mobile_money\",\n        \"momoProvider\": \"mtn\",\n        \"momoNumber\": \"233244123456\",\n        \"accountName\": \"Jane Organizer\",\n        \"destinationLabel\": \"MTN MoMo 23324****56 (Jane Organizer)\",\n        \"createdAt\": \"2026-07-18T14:22:00.000Z\",\n        \"updatedAt\": \"2026-07-18T14:22:00.000Z\"\n      }\n    ],\n    \"withdrawnTotal\": 1000,\n    \"reservedForRefunds\": 225,\n    \"availableToWithdraw\": 2975,\n    \"memberPayments\": {\n      \"statusCounts\": {\n        \"all\": 12,\n        \"paid\": 8,\n        \"partial\": 2,\n        \"pending\": 2\n      },\n      \"items\": [\n        {\n          \"id\": \"665f2b3c4d5e6f7a8b9c0d1e\",\n          \"attendee\": {\n            \"fullName\": \"Kwame Mensah\",\n            \"email\": \"kwame@example.com\"\n          },\n          \"contact\": \"233201112233\",\n          \"method\": \"MTN MoMo\",\n          \"paidOn\": \"2026-07-10T09:15:00.000Z\",\n          \"status\": \"paid\",\n          \"paymentStatus\": \"fully_paid\",\n          \"bookingStatus\": \"confirmed\",\n          \"amountPaid\": 450,\n          \"refundedAmount\": 0,\n          \"retainedAmount\": 450,\n          \"totalDue\": 450,\n          \"outstanding\": 0,\n          \"currency\": \"GHS\",\n          \"partySize\": 1,\n          \"createdAt\": \"2026-07-09T18:00:00.000Z\"\n        }\n      ]\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET Member Payments",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/members?paymentStatus=all&period=all&sortBy=paidOn&sortOrder=desc&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "payouts",
+                "trips",
+                "{{tripId}}",
+                "members"
+              ],
+              "query": [
+                {
+                  "key": "paymentStatus",
+                  "value": "all",
+                  "description": "all | paid | partial | pending"
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Search name, email, or phone"
+                },
+                {
+                  "key": "period",
+                  "value": "all",
+                  "description": "all | today | 7d | 30d | 90d"
+                },
+                {
+                  "key": "from",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "to",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "sortBy",
+                  "value": "paidOn",
+                  "description": "attendee | contact | method | paidOn | status | amount | createdAt"
+                },
+                {
+                  "key": "sortOrder",
+                  "value": "desc"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Member payments table with filters matching the UI tabs (All / Paid / Partial / Pending), search, time filter, and sorting."
+          },
+          "response": [
+            {
+              "name": "200 — Member payments",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/members?paymentStatus=all&period=all&sortBy=paidOn&sortOrder=desc&page=1&limit=20",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "members"
+                  ],
+                  "query": [
+                    {
+                      "key": "paymentStatus",
+                      "value": "all"
+                    },
+                    {
+                      "key": "period",
+                      "value": "all"
+                    },
+                    {
+                      "key": "sortBy",
+                      "value": "paidOn"
+                    },
+                    {
+                      "key": "sortOrder",
+                      "value": "desc"
+                    },
+                    {
+                      "key": "page",
+                      "value": "1"
+                    },
+                    {
+                      "key": "limit",
+                      "value": "20"
+                    }
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Member payments retrieved successfully\",\n  \"data\": {\n    \"trip\": {\n      \"id\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n      \"title\": \"Cape Coast Weekend Escape\"\n    },\n    \"statusCounts\": {\n      \"all\": 12,\n      \"paid\": 8,\n      \"partial\": 2,\n      \"pending\": 2\n    },\n    \"members\": [\n      {\n        \"id\": \"665f2b3c4d5e6f7a8b9c0d1e\",\n        \"attendee\": {\n          \"fullName\": \"Kwame Mensah\",\n          \"email\": \"kwame@example.com\"\n        },\n        \"contact\": \"233201112233\",\n        \"method\": \"MTN MoMo\",\n        \"paidOn\": \"2026-07-10T09:15:00.000Z\",\n        \"status\": \"paid\",\n        \"paymentStatus\": \"fully_paid\",\n        \"bookingStatus\": \"confirmed\",\n        \"amountPaid\": 450,\n        \"refundedAmount\": 0,\n        \"retainedAmount\": 450,\n        \"totalDue\": 450,\n        \"outstanding\": 0,\n        \"currency\": \"GHS\",\n        \"partySize\": 1,\n        \"createdAt\": \"2026-07-09T18:00:00.000Z\"\n      },\n      {\n        \"id\": \"665f2b3c4d5e6f7a8b9c0d1f\",\n        \"attendee\": {\n          \"fullName\": \"Ama Boateng\",\n          \"email\": \"ama@example.com\"\n        },\n        \"contact\": \"233245556677\",\n        \"method\": \"Card\",\n        \"paidOn\": \"2026-07-11T11:40:00.000Z\",\n        \"status\": \"partial\",\n        \"paymentStatus\": \"deposit_paid\",\n        \"bookingStatus\": \"confirmed\",\n        \"amountPaid\": 200,\n        \"refundedAmount\": 0,\n        \"retainedAmount\": 200,\n        \"totalDue\": 450,\n        \"outstanding\": 250,\n        \"currency\": \"GHS\",\n        \"partySize\": 1,\n        \"createdAt\": \"2026-07-11T10:00:00.000Z\"\n      },\n      {\n        \"id\": \"665f2b3c4d5e6f7a8b9c0d20\",\n        \"attendee\": {\n          \"fullName\": \"Yaw Asante\",\n          \"email\": \"yaw@example.com\"\n        },\n        \"contact\": \"233267778899\",\n        \"method\": null,\n        \"paidOn\": null,\n        \"status\": \"pending\",\n        \"paymentStatus\": \"unpaid\",\n        \"bookingStatus\": \"pending_payment\",\n        \"amountPaid\": 0,\n        \"refundedAmount\": 0,\n        \"retainedAmount\": 0,\n        \"totalDue\": 450,\n        \"outstanding\": 450,\n        \"currency\": \"GHS\",\n        \"partySize\": 1,\n        \"createdAt\": \"2026-07-12T08:30:00.000Z\"\n      }\n    ],\n    \"pagination\": {\n      \"page\": 1,\n      \"limit\": 20,\n      \"total\": 12,\n      \"pages\": 1\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET Export Member Payments (CSV)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/members/export?paymentStatus=all&period=all",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "payouts",
+                "trips",
+                "{{tripId}}",
+                "members",
+                "export"
+              ],
+              "query": [
+                {
+                  "key": "paymentStatus",
+                  "value": "all"
+                },
+                {
+                  "key": "period",
+                  "value": "all"
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Downloads a CSV of member payments. Accepts the same filters as the members list."
+          },
+          "response": [
+            {
+              "name": "200 — CSV export",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/members/export?paymentStatus=all&period=all",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "members",
+                    "export"
+                  ],
+                  "query": [
+                    {
+                      "key": "paymentStatus",
+                      "value": "all"
+                    },
+                    {
+                      "key": "period",
+                      "value": "all"
+                    }
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "text",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "text/csv; charset=utf-8"
+                },
+                {
+                  "key": "Content-Disposition",
+                  "value": "attachment; filename=\"member-payments-665f1a2b3c4d5e6f7a8b9c0d-1721491200000.csv\""
+                }
+              ],
+              "cookie": [],
+              "body": "Attendee,Email,Contact,Method,Paid On,Status,Amount Paid,Total Due,Currency\n\"Kwame Mensah\",kwame@example.com,233201112233,MTN MoMo,2026-07-10T09:15:00.000Z,paid,450,450,GHS\n\"Ama Boateng\",ama@example.com,233245556677,Card,2026-07-11T11:40:00.000Z,partial,200,450,GHS\n\"Yaw Asante\",yaw@example.com,233267778899,,,pending,0,450,GHS"
+            }
+          ]
+        },
+        {
+          "name": "POST Request Withdrawal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{organizerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 100,\n  \"momoProvider\": \"mtn\",\n  \"momoNumber\": \"0244123456\",\n  \"accountName\": \"Jane Organizer\",\n  \"note\": \"Trip settlement\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/withdrawals",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "organizer",
+                "payouts",
+                "trips",
+                "{{tripId}}",
+                "withdrawals"
+              ]
+            },
+            "description": "Initiates an automatic Mobile Money payout via Paystack Transfers.\n\n**Amount**\n- Pass `amount` to withdraw a portion\n- Omit `amount` to withdraw full `availableToWithdraw`\n- Locked funds: pending + processing + success withdrawals, plus reserved refunds\n\n**Mobile Money (required)**\n- `momoProvider`: `mtn` | `vodafone` | `airteltigo`\n- `momoNumber`: Ghana MoMo number\n- `accountName`: optional\n\n**Status flow**\n`pending` → `processing` (Paystack accepted) → `success` / `failed` (webhook or sync)\n\nRequires Paystack Transfers enabled + funded balance."
+          },
+          "response": [
+            {
+              "name": "201 — MoMo payout initiated (processing)",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": 100,\n  \"momoProvider\": \"mtn\",\n  \"momoNumber\": \"0244123456\",\n  \"accountName\": \"Jane Organizer\",\n  \"note\": \"Trip settlement\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/withdrawals",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "withdrawals"
+                  ]
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Mobile money payout initiated — funds are on the way\",\n  \"data\": {\n    \"withdrawal\": {\n      \"id\": \"665fa0b1c2d3e4f5a6b7c8d9\",\n      \"tripId\": \"665f1a2b3c4d5e6f7a8b9c0d\",\n      \"organizerId\": \"665e0a1b2c3d4e5f6a7b8c9a\",\n      \"amount\": 100,\n      \"currency\": \"GHS\",\n      \"status\": \"processing\",\n      \"label\": \"Processing\",\n      \"note\": \"Trip settlement\",\n      \"payoutMethod\": \"mobile_money\",\n      \"momoProvider\": \"mtn\",\n      \"momoNumber\": \"233244123456\",\n      \"accountName\": \"Jane Organizer\",\n      \"destinationLabel\": \"MTN MoMo 23324****56 (Jane Organizer)\",\n      \"paystackRecipientCode\": \"RCP_xxxxxxxxxx\",\n      \"paystackTransferCode\": \"TRF_xxxxxxxxxx\",\n      \"paystackReference\": \"wdr_665fa0b1c2d3e4f5a6b7c8d9_1721491200000\",\n      \"paystackTransferStatus\": \"pending\",\n      \"createdAt\": \"2026-07-20T19:28:00.000Z\",\n      \"updatedAt\": \"2026-07-20T19:28:01.000Z\"\n    },\n    \"availableToWithdraw\": 2875,\n    \"collected\": 4200,\n    \"reservedForRefunds\": 225\n  }\n}"
+            },
+            {
+              "name": "201 — Full balance withdrawal",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"momoProvider\": \"vodafone\",\n  \"momoNumber\": \"0201234567\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/withdrawals",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "withdrawals"
+                  ]
+                }
+              },
+              "status": "Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Mobile money payout initiated — funds are on the way\",\n  \"data\": {\n    \"withdrawal\": {\n      \"id\": \"665fa0b1c2d3e4f5a6b7c8da\",\n      \"amount\": 2975,\n      \"currency\": \"GHS\",\n      \"status\": \"processing\",\n      \"label\": \"Processing\",\n      \"payoutMethod\": \"mobile_money\",\n      \"momoProvider\": \"vodafone\",\n      \"momoNumber\": \"233201234567\",\n      \"destinationLabel\": \"Vodafone Cash 23320****67\",\n      \"paystackReference\": \"wdr_665fa0b1c2d3e4f5a6b7c8da_1721491300000\"\n    },\n    \"availableToWithdraw\": 0,\n    \"collected\": 4200,\n    \"reservedForRefunds\": 225\n  }\n}"
+            },
+            {
+              "name": "400 — Insufficient balance",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": 99999,\n  \"momoProvider\": \"mtn\",\n  \"momoNumber\": \"0244123456\"\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/withdrawals",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "withdrawals"
+                  ]
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": false,\n  \"message\": \"Insufficient balance. Available to withdraw: GHS 2975.00 (GHS 225.00 reserved for pending refunds)\"\n}"
+            },
+            {
+              "name": "400 — Missing MoMo details",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{organizerToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"amount\": 100\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/organizer/payouts/trips/{{tripId}}/withdrawals",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "organizer",
+                    "payouts",
+                    "trips",
+                    "{{tripId}}",
+                    "withdrawals"
+                  ]
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": false,\n  \"message\": \"Mobile money provider is required (mtn, vodafone, or airteltigo)\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "10 — Admin",
+      "item": [
+        {
+          "name": "POST Admin Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const token = json?.data?.token;",
+                  "if (token) pm.collectionVariables.set('adminToken', token);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Sign in as admin. Saves `adminToken`.\n\nCreate an admin first:\n`node scripts/createAdmin.js admin@vaybeex.com 'password123'`"
+          },
+          "response": [
+            {
+              "name": "200 — Admin signed in",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Signed in successfully\",\n  \"data\": {\n    \"user\": {\n      \"id\": \"665eadmin000000000000001\",\n      \"email\": \"admin@vaybeex.com\",\n      \"role\": \"admin\"\n    },\n    \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\"\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET Admin Me",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "auth",
+                "me"
+              ]
+            },
+            "description": "Current admin profile."
+          }
+        },
+        {
+          "name": "GET Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "dashboard"
+              ]
+            },
+            "description": "Home counters: travelers, organizers (pending/approved/rejected), trips, bookings, withdrawals, cancellations."
+          },
+          "response": [
+            {
+              "name": "200 — Dashboard",
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Admin dashboard retrieved successfully\",\n  \"data\": {\n    \"travelers\": {\n      \"total\": 120,\n      \"verified\": 98\n    },\n    \"organizers\": {\n      \"total\": 18,\n      \"pendingApproval\": 3,\n      \"approved\": 12,\n      \"rejected\": 1,\n      \"incompleteSetup\": 2\n    },\n    \"trips\": {\n      \"draft\": 4,\n      \"scheduled\": 6,\n      \"live\": 5,\n      \"completed\": 8,\n      \"cancelled\": 1\n    },\n    \"bookings\": {\n      \"pending_payment\": 10,\n      \"confirmed\": 80,\n      \"cancelled\": 5,\n      \"refunded\": 3\n    },\n    \"withdrawals\": {\n      \"counts\": {\n        \"pending\": 0,\n        \"processing\": 2,\n        \"success\": 14,\n        \"failed\": 1\n      },\n      \"amounts\": {\n        \"pending\": 0,\n        \"processing\": 450,\n        \"success\": 18200,\n        \"failed\": 100\n      }\n    },\n    \"cancellations\": {\n      \"awaitingReview\": 4\n    }\n  }\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET Users (all)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const user = json?.data?.users?.find(u => u.role === 'organizer') || json?.data?.users?.[0];",
+                  "if (user?.id) pm.collectionVariables.set('userId', user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "role",
+                  "value": "organizer",
+                  "disabled": true,
+                  "description": "traveler | organizer"
+                },
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "disabled": true
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "queue",
+                  "value": "pending_approval",
+                  "disabled": true,
+                  "description": "KYC queue shortcut"
+                }
+              ]
+            },
+            "description": "List registered travelers and organizers."
+          }
+        },
+        {
+          "name": "GET KYC Queue (pending organizers)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const user = json?.data?.users?.[0];",
+                  "if (user?.id) pm.collectionVariables.set('userId', user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?queue=pending_approval&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "queue",
+                  "value": "pending_approval"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Organizers awaiting admin approval after profile setup."
+          }
+        },
+        {
+          "name": "GET User Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Full profile + KYC photos (organizer) or booking stats (traveler)."
+          }
+        },
+        {
+          "name": "POST Approve Organizer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/organizers/{{userId}}/approve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "organizers",
+                "{{userId}}",
+                "approve"
+              ]
+            },
+            "description": "Approve pending organizer so they can create trips."
+          }
+        },
+        {
+          "name": "POST Reject Organizer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"National ID photo is unclear. Please re-submit.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/organizers/{{userId}}/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "organizers",
+                "{{userId}}",
+                "reject"
+              ]
+            },
+            "description": "Reject organizer application. Optional `reason`."
+          }
+        },
+        {
+          "name": "GET Admin Trips",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/trips?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "trips"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "status",
+                  "value": "live",
+                  "disabled": true
+                },
+                {
+                  "key": "organizerId",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "All platform trips with organizer summary."
+          }
+        },
+        {
+          "name": "GET Withdrawals Queue",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "const id = json?.data?.withdrawals?.[0]?.id;",
+                  "if (id) pm.collectionVariables.set('withdrawalId', id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "status",
+                  "value": "processing",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "MoMo withdrawal ops queue."
+          }
+        },
+        {
+          "name": "GET Withdrawal Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals",
+                "{{withdrawalId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Retry Failed Withdrawal",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/retry",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals",
+                "{{withdrawalId}}",
+                "retry"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST Sync Withdrawal from Paystack",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals",
+                "{{withdrawalId}}",
+                "sync"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
